@@ -1,0 +1,1778 @@
+---
+title: "IST707 Final Project - Customer Segmentation"
+author: "Paul Strader, Paul Phillips, Samuel Yohannes, Adam Vajdak"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#install.packages('naniar')
+
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(naniar)
+library(tidyverse)
+library(ggtext)
+library(plyr)
+library(arules)
+library(arulesViz)
+library(readr)
+#library(klaR)
+library(rattle)
+library(caret)
+library(e1071)
+library(rpart)
+library(class)
+library(neuralnet)
+library(readxl)
+library(xgboost)
+library(data.table)
+library(Matrix)
+library(vcd)
+library(sqldf)
+library(randomForest)
+library(naivebayes)
+library(FactoMineR)
+library(NLP)
+library(tm)
+library(xtable)
+library(readr)
+library(XML)
+library(RColorBrewer)
+library(wordcloud)
+library(rpart.plot)
+library(tree)
+library(modelr)
+
+
+#detach(package:klaR,unload=TRUE)
+#detach(package:MASS, unload = TRUE)
+```
+
+# Introduction
+
+  Customer Segmentation is one of the most valuable tools a data literate company has. When deployed effectively, customer segmentation can help marketing departments more efficiently allocate promotional spend and make better decisions regarding which media channels to use in order to advertise to their highest value customers. Segmentation can also help companies make informed decisions about executing price changes at a sub-state level, giving them significant leverage over competitors executing pricing strategies at the state, regional, or national level. Customer segmentation can also be used by R&D departments to develop new products or services to meet the needs of emerging market segments or high value existing segments and can be used by sales planning departments to determine which retail customers should receive a new product first. 
+  Other modeling techniques can help organizations make data driven decisions providing high return on investment and large profitability increases, but customers segmentation is the foundation for effective and strategic deployment of resources in a corporate environment. 
+  
+  This analysis will evaluate a data set, sourced from Kaggle, in which an automobile manufacturer has used customer segmentation to group their existing customers into four different customer profiles (Segments A, B, C, D). Our analysis will evaluate several different modeling techniques to better understand the decisions the company made in their existing customer segmentation and to find an accurate way to assign new customers to their existing market profiles. If successful, we will find a modelling technique that segments the existing customers into four groups following a distribution similar to the company's attempt at segmentation and will apply that model effectively to the new customer database. Our goal is determine which of the following modelling techniques accurately predicts the existing customer segment : Association Rule Mining, k nearest neighbor, decision trees, random forest, XGBoost, and SVM. 
+
+# About the Data
+
+  Our data set comes from Kaggle (add hyperlink here: https://www.kaggle.com/datasets/kaushiksuresh147/customer-segmentation?select=Train.csv) and contains two eleven dimensional subsets: a Training data set made up of about 8,000 existing customer records, and a test data set made up of around 2,600 new customer records. Both subsets of the data contain the following attributes:
+  
+  (Insert Data Table Here)
+
+
+# Load Data & Data Cleaning
+
+```{r loadData, include=TRUE}
+data <- read.csv('/Users/paulstrader/Desktop/archive-6/Train.csv', na.string = c(""))
+
+#str(data)
+
+summary(data)
+```
+
+The majority of the columns are currently either numeric or character. Based on the
+nature of this dataset, all of these variables will need to be converted to nominal
+data types. *Age* and *work experience* should furthermore be translated
+to data type ordinal as order here matters. *Ever Married* could be left as a nominal
+variable, but will be converted Boolean since the values already consist of *true*
+and *false* responses (stored in the yes or no format). The *Graduated* column also consists
+of true or false responses, so this attribute will be converted to type Boolean as well. 
+The *ID* variable should also be removed as this will only create noise in the later analysis. 
+The values of the ID column is unique at the record level; thus, contributes nothing to the 
+underlying trends in the dataset.
+
+```{r}
+# Display missing values by column
+for (col in colnames(data)) {
+  print(
+    sprintf(
+      'Missing value percent for %s: %s%%', 
+      col,
+      round((sum(is.na(data[,col]))/nrow(data)),3)*100
+    )
+  )
+}
+```
+
+There are some values missing in family size and work experience. Since the percentage
+is quite low, it may be worth considering imputing the missing values in order to
+keep the records.
+
+## Clean Data  
+
+### Remove ID column  
+
+```{r}
+data_noID <- subset(data, select = -c(ID))
+```
+
+### Explore Relationship of Missing Data  
+
+A great first plot for exploring missingness is the *vis_miss* function from the
+*naniar* package. This plot leverages the rows, as well as columns impacted by
+the missing data to yield a 2D summary.
+
+```{r fig.align="center",fig.width = 12.5}
+vis_miss(data_noID)
+```
+
+It would appear that there could be some correlation between the missing instances
+in *work experience* and *family size*. For missing data across all other columns it
+appears they are missing completely at random (MCAR). Next, the missingness will
+be further explored for possible correlations across the features impacted by such.
+This will be accomplished using the *UpSetR* package, which visualizes patterns
+(or combinations) of missingness across customer records.This tool highlights
+points at which missingess intersects between features at high frequencies. Having
+such occur would indicate that by simply removing missing values could lead to
+elimination of present subgroups in the data in the later modeling phase. For
+example, it could be the younger customers which parents are purchasing the vehicle
+for that are most commonly missing such information.That is, young adults who are 
+not yet working nor have families of their own would not have information available for 
+such attributes. By eliminating such instances (if such were discovered), the younger 
+population could be under represented (or entirely missed) in the model and analysis phase. 
+Essentially, it is important to verify next whether the missing values of these two features 
+are indeed correlated or not. Cases of correlated missingness between two observed values are 
+referred to as *missing at random* or MAR.
+
+```{r fig.align="center",fig.width = 12.5}
+gg_miss_upset(data_noID)
+```
+The following results indicate that there is not strong presence of correlated
+missing data. The strongest correlation of missing data is indeed between family
+size and work experience, but this intersection only represent **56** of the total
+records (e.g. **<1%** of the training data). It would seem missing data across the 
+columns are primarily independent events from one another. The rationale for work 
+experience consisting of the most missing data could be that this is the most frequent 
+question opted out by customers.  
+
+### Missing Values Across Customer Segments  
+
+The key stakeholders of this project may wish to know how dropping missing data
+could impact information available for the given customer segments and archetypes
+collected by their marketing team. This information is expense to collect and explore
+so it is important these attributes can still be properly represented the later
+phases of analysis. 
+
+```{r fig.align="center",fig.width = 12.5}
+# Explore data mechanisms and relationships with respect to missing data
+gg_miss_fct(
+  x=data_noID,
+  fct=Segmentation
+) +
+labs(
+  title = 'NA in Customer Data and Customer Segments'
+)
+```
+
+Although the *customer segment D* has the most records missing work experience, it
+is not by much with respect to the other segments. For the most part, work experience
+is consistently between **5-10%** across the customer segments.
+
+### Missing Values Across Anonymised Categories assigned to Customers  
+
+```{r fig.align="center",fig.width = 12.5}
+# Explore data mechanisms and relationships with respect to missing data
+gg_miss_fct(
+  x=data_noID,
+  fct=Var_1
+) +
+labs(
+  title = 'NA in Customer Data and Anonymised Customer Category'
+)
+```
+
+There seems to be less uniformity of missing data across the customer archetypes
+but not by much (largest differences being roughly 5% in frequency of occurrence).
+*Category 5* of customers is clearly impacted the least by the missing values.
+
+### Remove Missing Values  
+
+For this project we'll just be removing NA's.
+
+```{r}
+data_noID <- na.omit(data_noID)
+print(
+  sprintf(
+    "Lost %s%% of the total dataset.",
+    round(1 - nrow(data_noID)/nrow(data),3)*100
+  )
+)
+```
+
+### Explore Distribution of Age present in Dataset  
+
+```{r}
+data_noID %>% dplyr::select(Age) %>% ggplot(aes(x=Age)) + geom_histogram()
+```
+There appears to be several peaks present in the dataset with respect to
+disrtibution of age, so quantile ranking may smooth the underlying trends in the
+dataset too much. Instead, decile ranking will be applied.
+
+### Decile Rank Age Attribute Values  
+
+It is important age is represented as an ordinal attribute for EDA aspect
+of this analysis (visually displays better). Additionally to this, as means 
+of smoothing some of the noise present in the age attribute, a decile ranking 
+will be performed on the attribute. This will cut the column into **10** bins, 
+represented by an integer. From there, min & max ranges will be determined at 
+each quantile level and fitted as a label in the final dataset.
+
+```{r}
+# Note: age will be ranked in ascending order, that way the higher age levels will be represented by higher quantile values
+data_noID <- mutate(
+    data_noID,
+    ageRanked = ntile(data_noID$Age, 10)
+)
+
+# Convert to ordered nominal
+data_noID$ageRanked <- ordered(data_noID$ageRanked)
+
+# Explore distribution of ageRanked -> determine age ranges each represents
+data_noID  %>% 
+    dplyr::select(ageRanked, Age)  %>% 
+      group_by(ageRanked)  %>% 
+    dplyr::summarize(
+        RowCount = n(), 
+        MinAge=round(min(Age)),
+        MaxAge=round(max(Age))
+    )
+```
+```{r}
+# Note: the created categories will be easier to understand by actual rank values
+# update labels to represent these ranges
+
+# Create min & max ranges of each decile range
+age_dRange_labels <- 
+    data_noID  %>% 
+        dplyr::select(ageRanked, Age)  %>% 
+        group_by(ageRanked)  %>% 
+        dplyr::summarize(
+            RowCount = n(), 
+            MinAge=round(min(Age)),
+            MaxAge=round(max(Age))
+        )  %>% 
+        dplyr::select(MinAge, MaxAge)  %>% 
+        as.data.frame(c(MinAge, MaxAge))
+
+# Create new column for eventual label
+age_dRange_labels$ageLabel <- 
+    paste(
+      as.character(age_dRange_labels[,1]),
+      '-',
+      as.character(age_dRange_labels[,2]), 
+      sep=''
+    )
+
+# Display results
+age_dRange_labels$ageLabel
+```
+```{r}
+# Map new labels to existing age ranked column
+# That is, modify the existing ordinal column
+data_noID$age_dRanked_Bins <- factor(
+    data_noID$ageRanked,
+    labels=age_dRange_labels$ageLabel,
+    ordered=TRUE
+)
+
+# Note: the ordinal column created using decile ranking is still preserved,
+# but now the user-facing values are represented by the actual age range
+# within each decile represents in the dataset
+min(data_noID$age_dRanked_Bins)
+
+# Drop Age
+# Need ageRanked for conversion back to ordinal upon import later on!
+data_noID <- subset(data_noID, select = -c(Age))
+```
+
+### Convert Graduated & Ever Married to Type Boolean  
+
+```{r}
+# Convert Graduated
+data_noID$IsGraduated <- FALSE
+
+# Convert missing values back to blanks -> apparently can't apply joint filters on columns with NA's in R?
+data_noID[
+  is.na(data_noID$Graduated),
+  "Graduated"
+] <- ''
+
+# Note: NULL's are present; convert those to FALSE as well
+# since we don't know the answer
+data_noID[
+  (data_noID$Graduated == 'Yes' & data_noID$Graduated != '' ),
+  'IsGraduated'
+] <- TRUE
+
+# Convert Ever Married
+data_noID$EverMarriedTRUE <- FALSE
+
+# Convert missing values back to blanks -> apparently can't apply joint filters on columns with NA's in R?
+data_noID[
+  is.na(data_noID$Ever_Married),
+  "Ever_Married"
+] <- ''
+
+# Note: NULL's are present; convert those to FALSE as well
+# since we don't know the answer
+data_noID[
+  (data_noID$Ever_Married == 'Yes' & data_noID$Ever_Married != '' ),
+  'EverMarriedTRUE'
+] <- TRUE
+
+# Drop originals
+data_noID <- subset(data_noID, select = -c(Graduated, Ever_Married))
+```
+
+### Convert Work Experience & Family Size to Ordinal
+
+```{r}
+# Convert to Ordinal
+data_noID$Work_Experience <- ordered(data_noID$Work_Experience)
+
+data_noID$Family_Size <- ordered(data_noID$Family_Size)
+```
+
+### Convert Everything Else to Nominal
+
+```{r}
+# First grab all colnames NOT including the ones that have just been modified
+target_cols <- names(
+    subset(
+        data_noID,
+        select = -c(
+          age_dRanked_Bins, 
+          Work_Experience,
+          EverMarriedTRUE,
+          ageRanked,
+          IsGraduated,
+          Family_Size
+        )
+    )
+)
+
+# Iterate through columns
+for (col in target_cols) {
+    # Convert column to nominal
+    data_noID[,col] <- factor(
+      data_noID[,col]
+      )
+}
+
+# Inspect outcome
+glimpse(data_noID)
+```
+
+Now that we are confident in the cleanliness of our data set, we will begin our exploratory analysis.
+
+## Exploratory Analysis
+
+We begin by creating a user defined function that applies some additional cleaning steps to the data to facilitate our exploratory analysis.
+
+```{r, results=F, message=F, warning=F}
+
+
+clean_data_cols <- function(data) {
+  
+  # Clean Age Bins
+  data[,'age_dRanked_Bins'] <- factor(
+    data[,'ageRanked'],
+    ordered = TRUE,
+    labels = c(
+      "18-25", 
+      "25-29", 
+      "29-33", 
+      "33-37", 
+      "37-41", 
+      "41-45",
+      "45-50",
+      "50-57",
+      "57-68",
+      "68-89"
+    )
+  )
+  
+  # Clean Other Ordinal Columns
+  data[,'Work_Experience'] <- ordered(data[,'Work_Experience'])
+  data[,'Family_Size'] <- ordered(data[,'Family_Size'])
+  
+  # Note: for exploratory work treat Spending Score as ordinal
+  data[,'Spending_Score'] <- factor(
+    data[,'Spending_Score'],
+    levels=c('Low','Average','High'),
+    ordered=TRUE
+  )
+  
+  # Clean All Nominal Columns
+  
+  # First grab all colnames NOT including the ones that have just been modified
+  target_cols <- names(
+    subset(
+      data,
+      select = -c(
+        age_dRanked_Bins, 
+        Work_Experience,
+        EverMarriedTRUE,
+        ageRanked,
+        IsGraduated,
+        Family_Size,
+        Spending_Score
+      )
+    )
+  )
+  
+  # Iterate through columns
+  for (col in target_cols) {
+    # Convert column to nominal
+    data[,col] <- factor(
+      data[,col]
+    )
+  }
+  
+  return(data)
+}
+
+# Convert columns to expected types
+edaDF <- clean_data_cols(data_noID)
+
+glimpse(edaDF)
+summary(edaDF)
+```
+
+### Visualize Spending Scores Across Customer Segments & Categories  
+
+Here we want to see where the most valuable customers reside with respect to the
+provided segmentation and customer categories. If the concentrations are skewed,
+we will likely need to perform stratified sampling on such for k-Fold cross validation
+(e.g. evaluating modeling approaches).
+
+```{r fig.align="center",fig.width = 12.5}
+plot <- edaDF  %>% 
+    dplyr::select(Spending_Score, Var_1, Segmentation) %>%
+    group_by(Spending_Score, Var_1, Segmentation) %>% 
+    dplyr::summarize(ClientCount=n()) %>% 
+    ggplot(
+      aes(
+        x=Var_1,
+        y=ClientCount,
+        fill=Spending_Score)) +
+    geom_bar(stat="identity") + 
+    labs(
+      x='Customer Categories',
+      y='Customer Count',
+      fill='Spending Score',
+      title='Distribution of Customers by Spending Score & Category Across Segments'
+    ) +
+    facet_grid(rows = vars(Segmentation))
+
+
+
+# Display plot
+print(plot)
+```
+It would seem the data is heavily skewed to the *Cat_6* level of the categories.
+This means this feature will likely not be a good contributor for predictions of
+customer segmentation. If it is to still be used as a predictor, it will be important
+to utilized stratified sampling on customer category column in k-Fold cross validation
+evaluation to ensure samples are being drawn proportionally with each fold iteration.  
+
+Additionally, *segment D* and *segment A* seem to contain predominantly low spending 
+score customers. This is important for marketers to know as this will help them dictate
+how to advertise for these different segments with respect to what the customers are 
+most likely willing to spend. Instead, as seen in the plot *segment C* and 
+*segment B* contain the majority of the present *average* and *high* scoring customers.
+
+### General Understanding of Row Counts Across Categories  
+
+After seeing the results from the first plot it is a good idea to understand just how
+many customers fall in each of the categories in general. Here, a quick summary
+will be performed to obtain such. The same will be conducted for the segmentation
+column as well.
+
+```{r}
+# Groupby RowCount Summation by Customer Categories
+edaDF %>% 
+  dplyr::select(Var_1) %>% 
+  group_by(Var_1) %>% 
+  dplyr::summarise(RowCount=n())
+
+# Groupby RowCount Summation by Customer Segmentation
+edaDF %>% 
+  dplyr::select(Segmentation) %>% 
+  group_by(Segmentation) %>% 
+  dplyr::summarise(RowCount=n())
+```
+
+What is the row count sum of all non-category 6 levels?  
+
+```{r}
+edaDF %>% 
+  dplyr::select(Var_1) %>% 
+  filter(Var_1 != 'Cat_6') %>% 
+  dplyr::summarise(RowCount=n())
+```
+From a predictor standpoint, it may be worth considering creating a new feature
+that represents a weighted distribution of customers across the categories which
+penalizes categories containing higher concentrations of customers. Doing so would
+allow for all the category levels to still be represented in the analysis and considered
+by the modeling approaches. The trade off with exploring such would be the loss of the
+interpretation aspect in the modeling results. That is, the client would have to decide
+if model predictive performance is more important than model interpretation or vice
+versa.
+
+
+### Profession and Spending Score Across Segments 
+
+```{r fig.align="center",fig.width = 12.5}
+plot <- edaDF  %>% 
+    dplyr::select(Spending_Score, Profession, Segmentation) %>%
+    group_by(Spending_Score, Profession, Segmentation) %>% 
+    dplyr::summarize(ClientCount=n()) %>% 
+    ggplot(
+      aes(
+        x=Profession,
+        y=ClientCount,
+        fill=Spending_Score)) +
+    geom_bar(stat="identity") + 
+    labs(
+      x='Profession',
+      y='Customer Count',
+      fill='Spending Score',
+      title='Distribution of Customers by Spending Score & Profession Across Segments'
+    ) +
+    facet_grid(rows = vars(Segmentation)) + 
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+
+# Display plot
+print(plot)
+```
+
+The first detail that stands out here is that across the segments the majority of 
+customers are artists and healthcare workers. Next it clear that segment D is primarily
+comprised of healthcare workers specifically. This may also serve as useful information
+with respect to advertising strategies. While the artist occupation category makes up
+most of the average spending score customers in segment C, the high spending customers
+are distributed across executive and lawyer occupations in addition to artists. Segment
+B shows an even stronger concentration of high spending customers in these two occupations.
+One other interesting trait that can be seen in this plot with respect to the trends
+observed in the previous plot are how occupations differ between segment A & D, which
+were previously seen to be the segments containing the lower scored customers. Segment
+A shows a scarce presence of healthcare workers. Instead, there are primarily artists,
+doctors, engineers, and entertainment workers found in this segment. 
+
+### Age and Spending Score Across Segments
+
+```{r fig.align="center",fig.width = 12.5}
+plot <- edaDF  %>% 
+    dplyr::select(Spending_Score, age_dRanked_Bins, Segmentation) %>%
+    group_by(Spending_Score, age_dRanked_Bins, Segmentation) %>% 
+    dplyr::summarize(ClientCount=n()) %>% 
+    ggplot(
+      aes(
+        x=age_dRanked_Bins,
+        y=ClientCount,
+        fill=Spending_Score)) +
+    geom_bar(stat="identity") + 
+    labs(
+      x='Age Brackets',
+      y='Customer Count',
+      fill='Spending Score',
+      title='Distribution of Customers by Spending Score & Age Across Segments'
+    ) +
+    facet_grid(rows = vars(Segmentation))
+
+# Display plot
+print(plot)
+```
+
+This plot shows it is clear that customers with the highest spending scores fall
+into the *68-89* age range consistently across segments A, B, and C. Segment D is
+primarily comprised of the younger demographic with respect to customers. This is
+probably one of the characteristics used by the organization to build this segment.
+Segment A has a more uniform distribution across the brackets 25-29 all the way up
+to 41-45. This is another distinguishing factor as to how the low-scored customer
+segments differ from one another. It is clear for segments B & C that middle-aged
+individuals and above should be focused on for advertising efforts as these not only
+contain the majority of the customers but are also made up primarily of average scored
+spenders. 
+
+### Segment A: Age Brackets and Profession Across Scores  
+
+```{r fig.align="center",fig.width = 12.5}
+plot <- edaDF  %>% 
+    dplyr::select(
+      Spending_Score, 
+      age_dRanked_Bins, 
+      Profession,
+      Segmentation,
+      Var_1
+    ) %>%
+    filter(Segmentation == 'A') %>% 
+    group_by(
+      Spending_Score, 
+      age_dRanked_Bins, 
+      Profession,
+    ) %>% 
+    dplyr::summarize(ClientCount=n()) %>% 
+    ggplot(
+      aes(
+        x=age_dRanked_Bins,
+        y=ClientCount,
+        fill=Profession)) +
+    geom_bar(stat="identity") + 
+    labs(
+      x='Age Brackets',
+      y='Customer Count',
+      fill='Profession',
+      title='Segment A: Distribution of Customers by Age &<br>Profession Across Spending Scores'
+    ) +
+    facet_grid(rows = vars(Spending_Score)) +
+    theme(
+      plot.title.position = 'plot',
+      plot.title = element_markdown()
+    )
+
+# Display plot
+print(plot)
+```
+### Segment B: Age Brackets and Profession Across Scores  
+
+```{r fig.align="center",fig.width = 12.5}
+plot <- edaDF  %>% 
+    dplyr::select(
+      Spending_Score, 
+      age_dRanked_Bins, 
+      Profession,
+      Segmentation,
+      Var_1
+    ) %>%
+    filter(Segmentation == 'B') %>% 
+    group_by(
+      Spending_Score, 
+      age_dRanked_Bins, 
+      Profession,
+    ) %>% 
+    dplyr::summarize(ClientCount=n()) %>% 
+    ggplot(
+      aes(
+        x=age_dRanked_Bins,
+        y=ClientCount,
+        fill=Profession)) +
+    geom_bar(stat="identity") + 
+    labs(
+      x='Age Brackets',
+      y='Customer Count',
+      fill='Profession',
+      title='Segment B: Distribution of Customers by Age &<br>Profession Across Spending Scores'
+    ) +
+    facet_grid(rows = vars(Spending_Score)) +
+    theme(
+      plot.title.position = 'plot',
+      plot.title = element_markdown()
+    )
+
+# Display plot
+print(plot)
+```
+### Segment C: Age Brackets and Profession Across Scores  
+
+```{r fig.align="center",fig.width = 12.5}
+plot <- edaDF  %>% 
+    dplyr::select(
+      Spending_Score, 
+      age_dRanked_Bins, 
+      Profession,
+      Segmentation,
+      Var_1
+    ) %>%
+    filter(Segmentation == 'C') %>% 
+    group_by(
+      Spending_Score, 
+      age_dRanked_Bins, 
+      Profession,
+    ) %>% 
+    dplyr::summarize(ClientCount=n()) %>% 
+    ggplot(
+      aes(
+        x=age_dRanked_Bins,
+        y=ClientCount,
+        fill=Profession)) +
+    geom_bar(stat="identity") + 
+    labs(
+      x='Age Brackets',
+      y='Customer Count',
+      fill='Profession',
+      title='Segment C: Distribution of Customers by Age &<br>Profession Across Spending Scores'
+    ) +
+    facet_grid(rows = vars(Spending_Score)) +
+    theme(
+      plot.title.position = 'plot',
+      plot.title = element_markdown()
+    )
+
+# Display plot
+print(plot)
+```
+### Segment D: Age Brackets and Profession Across Scores  
+
+```{r fig.align="center",fig.width = 12.5}
+plot <- edaDF  %>% 
+    dplyr::select(
+      Spending_Score, 
+      age_dRanked_Bins, 
+      Profession,
+      Segmentation,
+      Var_1
+    ) %>%
+    filter(Segmentation == 'D') %>% 
+    group_by(
+      Spending_Score, 
+      age_dRanked_Bins, 
+      Profession,
+    ) %>% 
+    dplyr::summarize(ClientCount=n()) %>% 
+    ggplot(
+      aes(
+        x=age_dRanked_Bins,
+        y=ClientCount,
+        fill=Profession)) +
+    geom_bar(stat="identity") + 
+    labs(
+      x='Age Brackets',
+      y='Customer Count',
+      fill='Profession',
+      title='Segment D: Distribution of Customers by Age &<br>Profession Across Spending Scores'
+    ) +
+    facet_grid(rows = vars(Spending_Score)) +
+    theme(
+      plot.title.position = 'plot',
+      plot.title = element_markdown()
+    )
+
+
+# Display plot
+print(plot)
+```
+
+## Optimal Value for K
+
+  Since this dataset is a customer segmentation data set with pre-defined segments, we want to evaluate the validity of the number of segments chosen in the original clustering performed on the existing customer database. If this automobile manufacturer used either kMeans or kModes clustering, they would have chosen a desired number for k, the number of clusters they wanted the algorithm to create. Since there are four segments, they must have chosen k=4, but is this the true optimal value based on the data? We want to understand this before moving on to futher modeling. 
+  
+  Given our data is primarily categorical data after the cleaning process, we will utilize kModes, which works better with categorical data than kMeans, and we will utilize the elbow method for determining the optimal value for k.
+
+```{r optimalK, include=TRUE}
+
+library(klaR)
+
+# remove pre-defined cluster attributes
+kmodesDF<- edaDF[,-c(6,7)]
+
+set.seed(10)
+
+# max number of clusters to check
+k.max<-10
+
+kTest<- sapply(1:k.max,
+             function(k){set.seed(10)
+               sum(kmodes(kmodesDF, k, iter.max = 100, weighted=FALSE)$withindiff)})
+#kTest
+
+plot(1:k.max, kTest, type = "b", pch=10, frame=FALSE, xlab = "Number of clusters K", ylab="Total within-clusters sum of squares")
+```
+  While the elbow plot above does not display a perfect elbow, it is reasonable to infer that an elbow exists between k=3 and k=5. It could be that "better" clusters would be derived at k=3 or k=5 than those derived at k=4, however it is not obvious that 3 or 5 is a better value for k based on the elbow method, and there may have been internal business rules applied that required the automobile manufacturer to chose 4 clusters. Had this process convincingly shown that the optimal value for k is significantly different than k=4, for example k=10, we would consider re-clustering the data using the optimal k value and perform our modeling on the re-clustered data to hopefully derive more accurate and useful results. That is not the case, however, so we feel comfortable proceeding with modeling the data set using the original segmentation as the target variable in training and testing our models.
+
+# Models and Methods
+
+  The first modeling technique we will utilize in our analysis is Association Rule Mining. While we do not expect to use ARM as our final model, ARM can provide useful information to better understand how each attribute interacts in the process of segmenting customers into segments A, B, C, and D. Our goal is to find strong rules that begin to paint a data profile of each segment.
+
+## Association Rule Mining using Apiori algorithm 
+
+We look at the segments using ARM to see if we can find some patterns in the segments that can help us with making some models
+
+```{r}
+#creating ARM specific working dataframe based on cleaned data frame used for EDA
+bd<-edaDF
+
+# removing ageRanked 
+bd<-bd[,-8]
+
+#Running A Rules on Segment A using apriori sort by support First
+
+RP1 <-apriori(bd, parameter = list(supp = 0.01, conf = 0.4, minlen= 4), appearance = list(default="lhs",rhs="Segmentation=A"), control = list (verbose=F))
+
+RP1 <- sort(RP1,decreasing= TRUE,by="support")
+#inspect(RP1[1:50,])
+arules::inspect(RP1[1:10,])
+```
+
+Sorting by Lift
+```{r}
+RP1 <- sort(RP1,decreasing= TRUE,by="lift")
+#inspect(RP1[1:50,])
+arules::inspect(RP1[1:10,])
+
+```
+Sorting by confidence
+```{r}
+RP1 <- sort(RP1,decreasing= TRUE,by="confidence")
+#inspect(RP1[1:50,])
+arules::inspect(RP1[1:10,])
+```
+
+Running Arules on Segment B sorting by Confidence first
+
+```{r}
+
+RP2 <-apriori(bd, parameter = list(supp = 0.005, conf = 0.4), appearance = list(default="lhs",rhs="Segmentation=B"), control = list (verbose=F))
+
+RP2 <- sort(RP2,decreasing= TRUE,by="confidence")
+#inspect(RP2[1:50])
+arules::inspect(RP2[1:10])
+```
+
+Sort by Lift
+```{r}
+RP2 <- sort(RP2,decreasing= TRUE,by="lift")
+#inspect(RP2[1:50])
+arules::inspect(RP2[1:10])
+```
+Sort by Support
+```{r}
+RP2 <- sort(RP2,decreasing= TRUE,by="support")
+#inspect(RP2[1:50])
+arules::inspect(RP2[1:10])
+
+```
+
+
+A rules on Segment C  sorting by Support
+```{r}
+
+RP3 <-apriori(bd, parameter = list(supp = 0.02, conf = 0.6, minlen=5), appearance = list(default="lhs",rhs="Segmentation=C"), control = list (verbose=F))
+
+RP3 <- sort(RP3,decreasing= TRUE,by="support")
+#inspect(RP3[1:50,])
+arules::inspect(RP3[1:10,])
+```
+Sorted by Confidence
+```{r}
+RP3 <- sort(RP3,decreasing= TRUE,by="confidence")
+#inspect(RP3[1:50,])
+arules::inspect(RP3[1:10,])
+```
+Sort by lift
+```{r}
+RP3 <- sort(RP3,decreasing= TRUE,by="lift")
+#inspect(RP3[1:50,])
+arules::inspect(RP3[1:10,])
+```
+
+
+
+A Rules on Segment D Sorting by support
+```{r}
+
+RP4 <-apriori(bd, parameter = list(supp = 0.02, conf = 0.7,minlen=4), appearance = list(default="lhs",rhs="Segmentation=D"), control = list (verbose=F))
+
+RP4 <- sort(RP4,decreasing= TRUE,by="support")
+#inspect(RP4[1:10,])
+arules::inspect(RP4[1:10,])
+```
+
+Support by Lift
+```{r}
+RP4 <- sort(RP4,decreasing= TRUE,by="lift")
+arules::inspect(RP4[1:10,])
+```
+
+Sort by Confidence
+```{r}
+RP4 <- sort(RP4,decreasing= TRUE,by="confidence")
+#inspect(RP4[1:50,])
+arules::inspect(RP4[1:10,])
+```
+
+### Findings-Interesting rules
+
+Segment A
+All rules have a low confidence and low support no definitive rules to really follow
+-
+
+Segment B.
+All rules have a low confidence and low support no definitive rules to really follow
+
+artists with low spending score-
+
+Segment C
+
+artists family size 2 graduated and have been married seems to be the predominant group here 
+
+Segment D
+
+healthcare workers are in this segment in a lot of rules with very high confidence along with family size=4 age 18-25
+
+
+
+Overall some interesting finds but Nothing definite as support overall is too low for all rules to be considered important.
+
+## k-Nearest Neighbor, Decision Tree, Deep Learning
+
+This section contains all modeling efforts for basic decision tree, kNN, and
+basic deep learning networks that were explored. In the first part of this
+script a the *Customer Category* will be omitted from being one of the features
+used as model input. Based on the previously observed summaries from EDA, the
+majority of the sample set resides in *Category 6*, , while less than 100
+observations reside in the category level with the next largest amounts of
+customers. Instead, the best model configuration yielded from Part 1 will be
+applied to Part 2, where this feature will be considered and stratified sampling
+will be applied to the Customer Category feature in order to see if its
+consideration improves the model or not.
+
+```{r, results=F, message=F, warning=F}
+#==Variables==
+
+# For passing list of columns to remove to subset()
+`%ni%` <- Negate(`%in%`)
+
+# For now, remove Var_1 & age_dRanked_Bins
+# the bins were only really needed for EDA, the ranked values themselves serve
+# the same purpose
+data_clean <- subset(edaDF, select = -c(Var_1, ageRanked))
+
+glimpse(data_clean)
+```
+
+```{r}
+summary(data_clean)
+```
+```{r}
+# Determine Majority Vote
+data_clean %>% 
+  dplyr::select(Segmentation) %>% 
+  group_by(Segmentation) %>% 
+  dplyr::summarise(RowPct = round(n()/nrow(data_clean), 3)*100)
+```
+Based on the results above, the baseline performance for classification in this
+setting would be **26.4%**.
+
+## Stage Data for Modeling
+As mentioned k-Fold Cross Validation will be used for evaluating the performance
+of each model. The folds that will be used for evaluation will be created in
+this step.
+
+```{r}
+# Set seed for reproducibility
+set.seed(101)
+
+# Number of observations
+N <- nrow(data_clean)
+
+# Define number of folds
+kfolds <- 5
+
+# Generate indices for reference of rows to holdout (for each fold)
+holdout <- split(sample(1:N), 1:kfolds)
+```
+
+## Part 1: Determine Configuration for Classifier
+
+### Decision Tree 
+
+In this section ranges of *maxdepth* and *minsplit* will be explored for
+determining best configuration. *GridSearchCV* from the *caret* package will be
+used to explore tuning of maxdepth, while minsplit will be tuned manually.
+
+**Caret Grid Search Approach**
+```{r decision-tree-hyperparam-tuning}
+
+# Configure control
+train_control <- trainControl(
+  method = 'cv',
+  number = 5, # number of folds
+  search = 'grid'
+)
+
+# Set seed for reproducibility!
+set.seed(101)
+
+# Configure tuning grid
+# For now, accept all other default values
+dtGrid <- expand.grid(
+  maxdepth = c(3, 5, 10, 15, 20, 25)
+)
+
+# train decision tree while tuning parameters
+# Modeling options: names(getModelInfo())
+model <- train(
+  Segmentation ~ .,
+  data = data_clean,
+  method = 'rpart2',
+  trControl = train_control,
+  tuneGrid = dtGrid
+)
+
+# Display summary
+print(model)
+```
+
+**Test Max Depth**
+```{r}
+
+# Minimum Number of Samples Required by A Node for Decision Tree
+options <- seq(10, 250, 10) # minimum number of samples required for a node (default 1)
+
+# Perform 5-Fold CV for Decision Tree
+
+# Initialize final output
+cv_results <- c()
+
+# Iterate over k-Folds
+for (k in 1:kfolds) {
+  # Create test & training set for given fold
+  test <- data_clean[holdout[[k]], ]
+  train <- data_clean[-holdout[[k]], ]
+  
+  # Remove label from test
+  test_nolabel <- subset(test, select = -c(Segmentation))
+  
+  # Store test labels in separate variable
+  test_label <- test$Segmentation
+  
+  # Initialize object to store option results
+  temp_results <- c()
+  
+  # Iterate over k_options
+  for (option in options) {
+    
+    # Make predictions
+    model <-rpart::rpart(
+      Segmentation ~ .,
+      data=train,
+      control = rpart.control(
+            minsplit=option,
+            maxdepth = 5
+      ),
+      na.action=na.pass
+    )
+    
+    # build confusion matrix
+    confusion_mat <- caret::confusionMatrix(
+        data=predict(
+          model,
+          test_nolabel,
+          type='class'
+        ),
+        reference= test_label,
+        mode = 'everything'
+      )
+    
+    # Append kth iteration's results in final output objects
+    temp_results <- append(temp_results, as.numeric(confusion_mat$overall['Accuracy'])) # Return evaluation criteria
+    
+  }
+  
+  # Label outcome
+  names(temp_results) <- paste0('minsplit_', options)
+  
+  # Add results to final df
+  cv_results <- rbind(cv_results, temp_results)
+}
+
+# Update rownames
+rownames(cv_results) <- paste0('Fold_', 1:kfolds)
+
+# Display CV Results
+# Transpose so that folds are columns
+round(rowMeans(t(cv_results)), digits = 3) # Average results over k-Folds
+```
+The minsplit option seems to have yielded insignificant results across the
+options test; thus, value **250** would be selected for in order to improve
+model performance with respect to processing (e.g. reduces overall model
+flexibility).
+
+**Yield Confusion Matrix of Best Performing Model**  
+
+```{r}
+# Perform 5-Fold CV for Decision Tree
+
+# Initialize final output
+final_cm <- data.frame(
+  fold=c(),
+  orig=c(), 
+  pred=c()
+)
+cv_labels <- list()
+cv_pred <- list()
+
+# Iterate over k-Folds
+for (k in 1:kfolds) {
+  # Create test & training set for given fold
+  test <- data_clean[holdout[[k]], ]
+  train <- data_clean[-holdout[[k]], ]
+  
+  # Remove label from test
+  test_nolabel <- subset(test, select = -c(Segmentation))
+  
+  # Store test labels in separate variable
+  test_label <- test$Segmentation
+  
+  # Make predictions
+  model <-rpart::rpart(
+    Segmentation ~ .,
+    data=train,
+    control = rpart.control(
+          minsplit = 240,
+          maxdepth = 5
+    ),
+    na.action=na.pass
+  )
+  
+  # Predict on test labels
+  predictions <- predict(model, test_nolabel, type='class')
+  
+  # Append kth iteration's confusion matrix to final output dataframe
+  final_cm <- rbind(
+    final_cm,
+    data.frame(
+      fold=k,
+      orig=test_label,
+      pred=predictions
+    )
+  )
+}
+
+# Display final confusion matrix
+table(final_cm$orig, final_cm$pred)
+confusionMatrix(final_cm$orig, final_cm$pred)
+```
+Above illustrates the final 5-fold confusion matrix for the best performing
+decision tree yielded.
+
+```{r}
+# Train on entire dataset and inspect summary of model
+model <-rpart::rpart(
+  Segmentation ~ .,
+  data=data_clean,
+  control = rpart.control(
+        minsplit = 240,
+        maxdepth = 5
+  ),
+  na.action=na.pass
+)
+
+summary(model)
+```
+### k-Nearest Neighbors
+
+Note:  
+kNN requires separate data preparation than Decision Tree as the model
+is expecting columns to be formatted as numeric values. In this case, values
+will be mapped to numeric.
+
+```{r}
+# Read in csv file -> use File Explorer to choose
+data <- data_noID
+
+# Convert columns to expected types
+data <- clean_data_cols(data)
+
+# For now, remove Var_1 & age_dRanked_Bins
+# the bins were only really needed for EDA, the ranked values themselves serve
+# the same purpose
+data_knn <- subset(data, select = -c(Var_1, age_dRanked_Bins))
+
+glimpse(data_knn)
+```
+
+**Convert Character Columns to Integer Representations**
+```{r}
+# Select columns to be converted
+target_cols <- c(
+  "Gender",
+  "Profession",
+  "Spending_Score",
+  "Work_Experience",
+  "Family_Size",
+  "Segmentation",
+  "ageRanked"
+)
+
+# Iterate through columns, create new columns in data for integer representation
+for (col in target_cols) {
+  data_knn[, paste(col, '_int', sep='')] <- unclass(edaDF[,col])
+}
+
+# Inspect results
+glimpse(data_knn)
+```
+```{r}
+# Initial guess for k-Nearest Neighbors Approach
+k_guess <- round(sqrt(nrow(data_knn)))
+options <- seq(k_guess-75, k_guess+25, 4)
+
+# Perform 5-Fold CV for Naive Bayes Classifier Approach
+
+# Initialize final output
+cv_results <- c()
+
+# Iterate over k-Folds
+for (k in 1:kfolds) {
+  # Create test & training set for given fold
+  test <- data_knn[holdout[[k]],]
+  train <- data_knn[-holdout[[k]],]
+  
+  # Remove original columns from temporary dataframe
+  train <- subset(train, select = names(train) %ni% target_cols)
+  test <- subset(test, select = names(test) %ni% target_cols)
+  
+  # Remove label from test
+  test_nolabel <- subset(test, select = -c(Segmentation_int))
+  
+  # Store test labels in separate variable
+  test_label <- test$Segmentation_int
+  
+  # Initialize object to store option results
+  temp_results <- c()
+  
+  # Iterate over k_options
+  for (option in options) {
+    
+    # Make predictions
+    pred <- knn(
+      train=train,
+      test=test,
+      cl=train$Segmentation_int,
+      k=option,
+      prob=FALSE
+    )
+    
+    confusion_mat <- caret::confusionMatrix(
+      pred,
+      factor(test_label) # predictions returning back as factors, test labels are integers; quick fix
+    )
+    
+    # Append kth iteration's results in final output objects
+    temp_results <- append(temp_results, as.numeric(confusion_mat$overall['Accuracy'])) # Return evaluation criteria
+    
+  }
+  
+  # Label outcome
+  names(temp_results) <- paste0('kValue_', options)
+  
+  # Add results to final df
+  cv_results <- rbind(cv_results, temp_results)
+}
+
+# Update rownames
+rownames(cv_results) <- paste0('Fold_', 1:kfolds)
+
+# Display CV Results
+# Transpose so that folds are columns
+round(rowMeans(t(cv_results)), digits = 3) # Average results over k-Folds
+
+```
+```{r}
+data.frame(
+  k_neighbors=options,
+  accuracyScore=round(rowMeans(t(cv_results)), digits = 3)
+) %>% 
+dplyr::select(k_neighbors, accuracyScore) %>% 
+ggplot( aes(x=k_neighbors, y=accuracyScore) ) + 
+  geom_point() +
+  labs(
+    title='5-Fold Accuracy Scores Across k-Neighbor Values Tested'
+  )
+```
+
+
+**Yield Confusion Matrix of Best Performing Model**  
+
+```{r}
+# Perform 5-Fold CV for k-Nearest Neighbors Approach
+
+# Initialize final output
+final_cm <- data.frame(
+  fold=c(),
+  orig=c(), 
+  pred=c()
+)
+cv_labels <- list()
+cv_pred <- list()
+
+# Iterate over k-Folds
+for (k in 1:kfolds) {
+  # Create test & training set for given fold
+  test <- data_knn[holdout[[k]], ]
+  train <- data_knn[-holdout[[k]], ]
+  
+  # Remove original columns from temporary dataframe
+  train <- subset(train, select = names(train) %ni% target_cols)
+  test <- subset(test, select = names(test) %ni% target_cols)
+  
+  # Remove label from test
+  test_nolabel <- subset(test, select = -c(Segmentation_int))
+  
+  # Store test labels in separate variable
+  test_label <- test$Segmentation_int
+  
+  # Make predictions
+  predictions <- knn(
+    train=train,
+    test=test,
+    cl=train$Segmentation_int,
+    k=7,
+    prob=FALSE
+  )
+  
+  # Append kth iteration's confusion matrix to final output dataframe
+  final_cm <- rbind(
+    final_cm,
+    data.frame(
+      fold=k,
+      orig=factor(test_label), # predictions returning back as factors, test labels are integers; quick fix
+      pred=predictions
+    )
+  )
+}
+
+# Display final confusion matrix
+# Map 
+#table(final_cm$orig, final_cm$pred)
+confusionMatrix(final_cm$orig, final_cm$pred)
+```
+### Deep Learning Neural Network
+
+Note: Several approaches were tested for training a basic deep learning network,
+but each resulted in some form of internal (dimension-related issue). While
+testing number of layers in the deep learning network and threshold values (in a
+similar fashion seen for k-fold Neighbors), we kept running into convergence
+error messages. Even after simplifying the k-fold approach (e.g. fixing all
+hyper parameters of the neural network) we still resulted in an error message. For these reasons, this modeling approach has been shelved for this project. 
+
+## Naive Bayes and SVM
+
+Our analysis will now test Naive Bayes and SVM to determine if we can find better accuracy than that which we found using previous modeling techniques.
+
+### NB and SVM Cleaning
+
+
+```{r nbClean, include = TRUE}
+
+set.seed(12345)
+
+Train<-bd
+
+dt<- sort(sample(nrow(Train),nrow(Train)*.9))
+Rtrain<-Train[dt,]
+RtestL<-Train[-dt,]
+Rtest <- RtestL[,-1]
+Rlabel <- RtestL$Segmentation
+
+```
+
+```{r}
+# Function for model evaluation for our 4 by 4 table
+
+get_accuracy_rate <- function(results_table, total_cases) {
+  diagonal_sum <- sum(c(results_table[[1]], results_table[[6]], results_table[[11]], results_table[[16]])) 
+  ((diagonal_sum / total_cases)*100) 
+  }
+
+```
+
+#### Naive Bayes
+```{r }
+#training
+NB<- naiveBayes(Segmentation~., data=Rtrain, na.action = na.pass)
+#testing
+NBP <-predict(NB,RtestL)
+```
+
+
+```{r }
+NBC <- confusionMatrix(NBP,Rlabel, mode = "everything")
+NBC
+
+```
+
+Naive Bayes returned an accuracy of 56%, which is less than some of our other modeling techniques, so our analysis will proceed with Support Vector Machines.
+
+#### SVM
+
+get data ready for K folds
+
+```{r}
+N <- nrow(Train)
+kfolds <- 5
+set.seed(30)
+holdout <- split(sample(1:N), 1:kfolds)
+```
+
+
+```{r error=FALSE}
+
+# Baseline SVM - no changes to data
+all_results <- data.frame(orig=c(), pred=c())
+for (k in 1:kfolds) {
+ new_test <- Train[holdout[[k]], ]
+ new_train <- Train[-holdout[[k]], ]
+
+ new_test_no_label <- new_test[-c(7)]
+ new_test_just_label <- new_test[c(7)]
+
+ test_model <- svm(Segmentation ~ ., new_train, na.action=na.pass)
+ pred <- predict(test_model, new_test_no_label, type=c("class"))
+
+ all_results <- rbind(all_results,
+data.frame(orig=new_test_just_label$Segmentation, pred=pred))
+}
+
+
+table(all_results$orig, all_results$pred)
+
+get_accuracy_rate(table(all_results$orig, all_results$pred), length(all_results$pred))
+```
+
+Base SVM model returned accuracy of 50.88%.
+
+### Pluggin into this variable to make it work with old code, is not binarized
+```{r}
+binarized_svm_trainset <- Train
+
+```
+
+
+
+#### Polynomial Kernel
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+all_results <- data.frame(orig=c(), pred=c())
+for (k in 1:kfolds) {
+  new_test <- binarized_svm_trainset[holdout[[k]], ]
+  new_train <- binarized_svm_trainset[-holdout[[k]], ]
+  
+  new_test_no_label <- new_test[-c(7)]
+  new_test_just_label <- new_test[c(7)]
+  
+  test_model <- svm(Segmentation ~ ., new_train, kernel="polynomial", na.action=na.pass)
+  pred <- predict(test_model, new_test_no_label, type=c("class"))
+  
+  all_results <- rbind(all_results, data.frame(orig=new_test_just_label$Segmentation, pred=pred))
+}
+table(all_results$orig, all_results$pred)
+get_accuracy_rate(table(all_results$orig, all_results$pred), length(all_results$pred))
+```
+
+Polynomial Kernel returned accuracy of 25.79%.
+
+#### Radial Kernel
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+all_results <- data.frame(orig=c(), pred=c())
+for (k in 1:kfolds) {
+  new_test <- binarized_svm_trainset[holdout[[k]], ]
+  new_train <- binarized_svm_trainset[-holdout[[k]], ]
+  
+  new_test_no_label <- new_test[-c(7)]
+  new_test_just_label <- new_test[c(7)]
+  
+  test_model <- svm(Segmentation ~ ., new_train, kernel="radial", na.action=na.pass)
+  pred <- predict(test_model, new_test_no_label, type=c("class"))
+  
+  all_results <- rbind(all_results, data.frame(orig=new_test_just_label$Segmentation, pred=pred))
+}
+table(all_results$orig, all_results$pred)
+get_accuracy_rate(table(all_results$orig, all_results$pred), length(all_results$pred))
+```
+
+Radial Kernel returned accuracy of 50.88%
+
+#### Sigmoid Kernel
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+all_results <- data.frame(orig=c(), pred=c())
+for (k in 1:kfolds) {
+  new_test <- binarized_svm_trainset[holdout[[k]], ]
+  new_train <- binarized_svm_trainset[-holdout[[k]], ]
+  
+  new_test_no_label <- new_test[-c(7)]
+  new_test_just_label <- new_test[c(7)]
+  
+  test_model <- svm(Segmentation ~ ., new_train, kernel="sigmoid", na.action=na.pass)
+  pred <- predict(test_model, new_test_no_label, type=c("class"))
+  
+  all_results <- rbind(all_results, data.frame(orig=new_test_just_label$Segmentation, pred=pred))
+}
+table(all_results$orig, all_results$pred)
+get_accuracy_rate(table(all_results$orig, all_results$pred), length(all_results$pred))
+```
+
+Sigmoid kernel accuracy was 50.08%
+
+Highest accuracy returned with SVM was 50.88%, still less than other modeling techniques tested.
+
+### Random Forest
+
+---
+
+```{r}
+# Set seed for reproducibility
+set.seed(101)
+
+# Number of observations
+N <- nrow(data_clean)
+
+# Define number of folds
+kfolds <- 5
+
+# Generate indices for reference of rows to holdout (for each fold)
+holdout <- split(sample(1:N), 1:kfolds)
+```
+
+## Part 1: Determine Configuration for Classifier
+
+### Random Forest
+
+**Test Number of Trees**
+
+```{r}
+
+# Number of Trees for RandomForest
+ntree_options <- c(250, 500, 750, 1000) # (default 500)
+
+# Perform 5-Fold CV for Random Forest Approach
+
+# Initialize final output
+cv_results <- c()
+
+# Iterate over k-Folds
+for (k in 1:kfolds) {
+  # Create test & training set for given fold
+  test <- data_clean[holdout[[k]], ]
+  train <- data_clean[-holdout[[k]], ]
+  
+  # Remove label from test
+  test_nolabel <- subset(test, select = -c(Segmentation))
+  
+  # Store test labels in separate variable
+  test_label <- test$Segmentation
+  
+  # Initialize object to store option results
+  temp_results <- c()
+  
+  # Iterate over ntree_options
+  for (option in ntree_options) {
+    
+    # Make predictions
+    model <- randomForest(
+      Segmentation ~ .,
+      data=train,
+      ntree=option,
+      na.action=na.pass
+    )
+    
+    # build confusion matrix
+    confusion_mat <- caret::confusionMatrix(
+        data=predict(
+          model,
+          test_nolabel,
+          type='class'
+        ),
+        reference= test_label,
+        mode = 'everything'
+      )
+    
+    # Append kth iteration's results in final output objects
+    temp_results <- append(temp_results, as.numeric(confusion_mat$overall['Accuracy'])) # Return evaluation criteria
+    
+  }
+  
+  # Label outcome
+  names(temp_results) <- paste0('ntree_', ntree_options)
+  
+  # Add results to final df
+  cv_results <- rbind(cv_results, temp_results)
+}
+
+# Update rownames
+rownames(cv_results) <- paste0('Fold_', 1:kfolds)
+
+# Display CV Results
+# Transpose so that folds are columns
+round(rowMeans(t(cv_results)), digits = 3) # Average results over k-Folds
+```
+**Yield Confusion Matrix of Best Performing Model**  
+
+The following process should be a 5-fold run using the final configured model in
+order to yield a confusion matrix for such.
+```{r}
+# Perform 5-Fold CV for Decision Tree
+
+# Initialize final output
+final_cm <- data.frame(
+  fold=c(),
+  orig=c(), 
+  pred=c()
+)
+cv_labels <- list()
+cv_pred <- list()
+
+# Iterate over k-Folds
+for (k in 1:kfolds) {
+  # Create test & training set for given fold
+  test <- data_clean[holdout[[k]], ]
+  train <- data_clean[-holdout[[k]], ]
+  
+  # Remove label from test
+  test_nolabel <- subset(test, select = -c(Segmentation))
+  
+  # Store test labels in separate variable
+  test_label <- test$Segmentation
+  
+  # Make predictions
+  model <- randomForest(
+    Segmentation ~ .,
+    data=train,
+    ntree=500, # change this & any other param to what you yield!
+    na.action=na.pass
+  )
+  
+  # Predict on test labels
+  predictions <- predict(model, test_nolabel, type='class')
+  
+  # Append kth iteration's confusion matrix to final output dataframe
+  final_cm <- rbind(
+    final_cm,
+    data.frame(
+      fold=k,
+      orig=test_label,
+      pred=predictions
+    )
+  )
+}
+
+# Display final confusion matrix
+#table(final_cm$orig, final_cm$pred)
+confusionMatrix(final_cm$orig, final_cm$pred)
+```
+
+---
+
+### XGBoost
+
+ Extreme Gradient Boosting is an ensemble machine learning technique that utilizes a large number of decision trees. XGBoost is similar to Random Forest, another ensemble classifier used earlier in our analysis, but Random Forest utilizes tree bagging while XGBoost utilizes boosted trees. The primary difference between bagging (Random Forest) and boosting (XGBoost) is that bagging grows a large number of decision trees, then takes the average result across all of the trees. Boosting looks to learn from the first trees created, and evolves subsequent trees to minimize error detected in the prior trees. While XGBoost is sensitive to overfitting, when parameters are carefully tuned it can produce outstanding predictive accuracy.
+ 
+ Our initial goal in utilizing XGBoost was to improve on the poor accuracy results from our Random Forest model, however in researching XGBoost we learned that XGBoost does not work well with multinomial categorical data like our automobile customer data. XGBoost works best with binomial numeric data because it requires transforming the data into a sparse matrix. When there are multiple predictor classes, this exponentially increases the dimensionality of the data set, making it difficult to derive informative predictions from its output. For those reasons, we decided to shelve XGBoost as a predictor for this project.
+ 
+ Further examination however, suggested that we could still utilize XGBoost to better understand how the original segments were created. ARM did not yield definitive results, perhaps XGBoost could improve our understanding of the profiles of each existing customer segment. To accomplish this task, we need to convert our multinomial data set into four separate binomial predicts representing inclusion or exclusion from each of the individual segments. 
+
+```{r xgbSparse, include=TRUE}
+
+library(klaR)
+#create a copy of eda dataframe for xgb without age_dRanked_bins (which was added for eda viz purposes)
+xgDF<-edaDF[,-9]
+
+#convert to data table
+df<- data.table(xgDF, keep.rownames = FALSE)
+
+
+# convert to sparse matrix
+sparse_matrix<-sparse.model.matrix(Segmentation~.,data=xgDF)[,-1]
+head(sparse_matrix)
+```
+
+With data converted to sparse matrix, the multinomial data can be converted to four separate output_vectors with a binary decision, included or excluded from the given customer segment. Four individual xgboost models will be created (one for each segment) then feature importance will be measured and plotted for each segment.
+
+```{r modelAndPlot, include=TRUE}
+
+#create 4 output vectors
+outA = df[,Segmentation]=='A'
+outB<-df[,Segmentation]=='B'
+outC<-df[,Segmentation]=='C'
+outD<-df[,Segmentation]=='D'
+
+#create 4 xgb models
+xgA<-xgboost::xgboost(data=sparse_matrix, label=outA, max_depth=4, eta=1, nthread=2, nrounds=10, objective = "binary:logistic")
+xgB<-xgboost::xgboost(data=sparse_matrix, label=outB, max_depth=4, eta=1, nthread=2, nrounds=10, objective = "binary:logistic")
+xgC<-xgboost::xgboost(data=sparse_matrix, label=outC, max_depth=4, eta=1, nthread=2, nrounds=10, objective = "binary:logistic")
+xgD<-xgboost::xgboost(data=sparse_matrix, label=outD, max_depth=4, eta=1, nthread=2, nrounds=10, objective = "binary:logistic")
+
+#evaluate feature importance for all 4 models
+importanceA<-xgb.importance(feature_names = colnames(sparse_matrix), model = xgA)
+importanceB<-xgb.importance(feature_names = colnames(sparse_matrix), model = xgB)
+importanceC<-xgb.importance(feature_names = colnames(sparse_matrix), model = xgC)
+importanceD<-xgb.importance(feature_names = colnames(sparse_matrix), model = xgD)
+
+#plot each feature importance table
+xgb.plot.importance(importance_matrix=importanceA, col='darkorange4',main='XGB Importance Plot: Segment A')
+xgb.plot.importance(importance_matrix=importanceB, col='cyan4',main='XGB Importance Plot: Segment B')
+xgb.plot.importance(importance_matrix=importanceC, col='seagreen3',main='XGB Importance Plot: Segment C')
+xgb.plot.importance(importance_matrix=importanceD, col='orchid3',main='XGB Importance Plot: Segment D')
+
+```
+#### XGBoost for Feature Importance Findings
+
+  *NB: These findings are slightly different than those we presented during our final presentation. In evaluation of those results, we realized we had unnecessarily further partitioned the training data set into smaller test and train data sets. We decided to use the full training data set in our final modeling to generate a more accurate picture of each segment.
+  
+  - Segment A: Age, Spending Score, and Profession = Healthcare were all important factors in determining inclusion in segment A
+  
+  - Segment B: Age, IsGraduated = TRUE, Profession = Entertainment were all important factors in determining inclusion in segment B
+  
+  - Segment C: Spending Score, IsGraduated = TRUE, Age were all important factors in determining inclusion in segment C
+  
+  - Segment D: Age, Profession = Healthcare, Spending Score were all important factors in determining inclusion in segment D
+  
+  Clearly Age, education status, spending score, and profession are important in evaluating the segmentation process through XGBoost. Unfortunately the output is not as clear and definitive as we hoped and the results mirror what we saw in ARM. Perhaps future analysis could re-evaluate the parameters or find more true numeric data on these customers to improve results, but that is out of scope for this analysis.
+
+# Conclusions
+
+```{r}
+models<- c("Decision Tree", "kNN", "Naive Bayes", "SVM - Radial", "Random Forest")
+accuracies <- c(50.08, 87.52, 56, 50.88, 53.37)
+model_comp <- data.frame(models, accuracies)
+print(dplyr::arrange(model_comp, -accuracies))
+```
+  
+The dataframe output above highlights the different modeling techniques we performed in this analysis and their best accuracy. These accuracies reflect significant tuning, but are a great way to compare algorithm effectiveness in predicting the correct customer segmentation for this automobile company. Most of the models performed comprably, with accuracies around 50%, but kNN significantly outperformed the others with 87.52% predictive accuracy. In our analysis, kNN was the winner. 
+
+## Final Thoughts
+  Our analysis set out to determine which of several modeling techniques would be best suited for predicting customer segments given a pre-clustered training data set by an automobile manufacturer. We tested various iterations of kNN, Naive Bayes, Random Forest, SVM, Decision Trees, XGBoost, kModes clustering, and Association Rule mining. Across those eight modeling techniques, we received actionable results from five (kNN, Naive Bayes, Random Forest, SVM, Decision Tree). kModes, XGBoost, and Association Rule Mining gave us some insight into the profiles of each customer segment, but these profiles were not definitive and further analysis is needed to better understand how each segment is unique. However, our goal was finding the best predictive model, which turned out to be kNN. 
+  This data set presented unique challenges, most notably its prevalence of categorical data. Our recommendation to this company would be to start collecting a broader array of data, especially numeric data, as it would open up more options for modeling their consumers and may yield more accurate segmentation.
+  This is an important next step for this automobile manufacturer because efficient and accurate segmentation is critical for success in an increasingly data literate marketplace. Customer segmentation is a vital pillar of data modeling based decision making for large corporations. Accurate segments help companies advertise, launch new products, and execute pricing strategies. An excellent pricing strategy for a great new product is only successful if targeted to the right consumer, in the right place, at the right time. We advise this company to expand its data collection so future analysis can be more insightful, creating more accurate customer segments, and unlocking potential for higher ROI and profitability.
+
+  
+**Resources**
+Exploring Missing Data  
+https://cran.r-project.org/web/packages/naniar/vignettes/naniar-visualisation.html
+
+How to Write DataFrame to CSV in R  
+https://datatofish.com/export-dataframe-to-csv-in-r/
+
+Use File Explorer from R  
+https://statisticsglobe.com/file-choose-function-r
+
+Difference Between Customer Segments and Customer Categories  
+https://commence.com/blog/2020/11/12/customer-segments-vs-customer-archetypes/
+
+**rpart** Decision Tree Parameters  
+https://www.learnbymarketing.com/tutorials/rpart-decision-trees-in-r/ 
+
+**caret** GridSearchCV Hyperparameter Tuning Approach  
+https://www.projectpro.io/recipes/tune-hyper-parameters-grid-search-r  
+
+MinSplit in R  
+https://medium.com/talking-with-data/minsplit-and-minbucket-a49ff56026c8  
+
+Configure **rpart** While Using GridSearchCV  
+https://stackoverflow.com/questions/36781755/how-to-specify-minbucket-in-caret-train-for  
+
+Overview of Deep Learning for Multiclass in R  
+https://www.thearmchaircritic.org/tech-journal/build-a-multi-class-classification-neural-network-in-r-in-fifty-lines-of-code  
+
+**neuralnet** Help Page  
+https://www.rdocumentation.org/packages/neuralnet/versions/1.44.2/topics/neuralnet  
